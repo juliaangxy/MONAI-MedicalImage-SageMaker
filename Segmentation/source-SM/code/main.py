@@ -9,6 +9,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 from monai.apps import DecathlonDataset, download_and_extract
 from monai.config import print_config, DtypeLike, PathLike
+from monai.handlers.utils import from_engine
+from monai.networks.nets import UNet
+from monai.networks.layers import Norm
+from monai.metrics import DiceMetric
+from monai.losses import DiceLoss
+from monai.inferers import sliding_window_inference
 from monai.data import CacheDataset, DataLoader, Dataset, decollate_batch
 from monai.data.image_reader import ImageReader, ITKReader, NibabelReader, NumpyReader, PILReader
 from monai.data.nifti_saver import NiftiSaver
@@ -68,18 +74,13 @@ def arg_parse():
     parser.add_argument("--model-dir", type=str, default=os.environ.get("SM_MODEL_DIR"))
     
     # sagemaker-containers passes hyperparameters as arguments
-#     parser.add_argument("--epoch", type=int, default=500)
-#     parser.add_argument("--batch", type=int, default=1)
 
     # This is a way to pass additional arguments when running as a script
     # and use sagemaker-containers defaults to set their values when not specified.
     parser.add_argument("--train", type=str, default=os.environ.get("SM_CHANNEL_TRAIN"))
     parser.add_argument("--validation", type=str, default=os.environ.get("SM_CHANNEL_VALIDATION"))    
 
-#     parser.add_argument("--train", type=str, default=os.environ.get("SM_CHANNEL_TRAIN"))
-#     parser.add_argument("--test", type=str, default=os.environ.get("SM_CHANNEL_TEST"))
     return parser.parse_args()
-#     return parser.parse_known_args()
 
 
 hyperparameters_file_path = "/opt/ml/input/config/hyperparameters.json"
@@ -93,10 +94,22 @@ training_job_name_env = "TRAINING_JOB_NAME"
 training_job_arn_env = "TRAINING_JOB_ARN"
 
 # load the dataset. firstly, we need to define transformer for both training dataset and validation dataset
+# then after that we will create a dataloader
 
-def train_transforms(data):
+
+def load_data(data_dir, batch_size, num_workers, source):
     
-    Compose(
+    images = sorted(glob.glob(os.path.join(data_dir, source, "imagesTr", "*.nii.gz")))
+    labels = sorted(glob.glob(os.path.join(data_dir, source, "labelsTr", "*.nii.gz")))
+    
+    data_files = [
+    {"image": image_name, "label": label_name}
+    for image_name, label_name in zip(images, labels)
+    ]
+
+    ##training dataset
+    
+    train_transforms = Compose(
         [
             LoadImaged(keys=["image", "label"]),
             EnsureChannelFirstd(keys=["image", "label"]),
@@ -128,8 +141,7 @@ def train_transforms(data):
             EnsureTyped(keys=["image", "label"]),
         ]
     )
-def val_transforms(data):
-    Compose(
+    val_transforms = Compose(
         [
             LoadImaged(keys=["image", "label"]),
             EnsureChannelFirstd(keys=["image", "label"]),
@@ -144,49 +156,22 @@ def val_transforms(data):
             EnsureTyped(keys=["image", "label"]),
         ]
     )
-
     
-# def data_dicts(zip_files_folder):
-
-#     return dicts
-
-def load_data(data_dir, inputdata, batch_size, num_workers, source):
-    
-    images = sorted(glob.glob(os.path.join(data_dir, source, "imagesTr", "*.nii.gz")))
-    labels = sorted(glob.glob(os.path.join(data_dir, source, "labelsTr", "*.nii.gz")))
-    
-    data_files = [
-    {"image": image_name, "label": label_name}
-    for image_name, label_name in zip(images, labels)
-    ]
-    
-    ##training dataset
-    if(source=='train'):
-        transforms = train_transforms(inputdata)
-#         train_batch_size = int(os.environ['SM_HP_TRAIN-BATCH-SIZE'])
-#         train_batch_size = args.train_batch_size
+    if(source=='training'):
         train_batch_size = batch_size
-        train_ds = CacheDataset(data=data_files, transform=transforms, cache_rate=0.8,num_workers=num_workers)
-#         train_loader = DataLoader(train_ds, batch_size=2, shuffle=True, num_workers=4)
-        loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+        data_ds = CacheDataset(data=data_files, transform=train_transforms, cache_rate=0.8,num_workers=num_workers)
+        loader = DataLoader(data_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
         ##training dataset
 
     if(source=='val'):
-        val_transforms = val_transforms(inputdata)
-#         val_batch_size = int(os.environ['SM_HP_VAL-BATCH-SIZE'])
-#         val_batch_size = args.val_batch_size
         val_batch_size = batch_size
-        val_ds = CacheDataset(data=data_files, transform=transforms, cache_rate=0.8, num_workers=num_workers)
-        # val_ds = Dataset(data=val_files, transform=val_transforms)
-#         val_loader = DataLoader(val_ds, batch_size=1, num_workers=4)
-        loader = DataLoader(val_ds, batch_size=batch_size, num_workers=num_workers)
+        data_ds = CacheDataset(data=data_files, transform=val_transforms, cache_rate=0.8, num_workers=num_workers)
+        loader = DataLoader(data_ds, batch_size=batch_size, num_workers=num_workers)
 
-    return loader
-#     return x_train, y_train, x_test, y_test, input_shape, n_labels
+    return loader, data_ds
 
 
-
-def training(epochs, val_interval, train_loader, validation_loader):
+def training(epochs, val_interval, train_loader, train_ds, val_loader, val_ds):
     
     # standard PyTorch program style: create UNet, DiceLoss and Adam optimizer
     device = torch.device("cuda:0")
@@ -204,16 +189,13 @@ def training(epochs, val_interval, train_loader, validation_loader):
     optimizer = torch.optim.Adam(model.parameters(), 1e-4)
     dice_metric = DiceMetric(include_background=False, reduction="mean")
     
-
-    ## model training
-#     max_epochs = 50 #600
-#     max_epochs = int(os.environ['SM_HP_EPOCHS'])
-#     max_epochs = args.epoch
     max_epochs = epochs
-#     val_interval = 2
-#     val_interval = int(os.environ['SM_HP_VAL-INTERVAL'])
-#     val_interval = args.val_interval
     val_interval = val_interval
+    train_loader = train_loader
+    train_ds = train_ds
+    val_loader = val_loader
+    val_ds = val_ds
+    
     best_metric = -1
     best_metric_epoch = -1
     epoch_loss_values = []
@@ -282,28 +264,19 @@ def training(epochs, val_interval, train_loader, validation_loader):
                 )
 
     ## save the model 
-#     model_dir = os.environ["SM_MODEL_DIR"]
     save_model_artifacts(model_dir + "/", net)
 
 
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
-    # Hyperparameters sent by the client are passed as command-line arguments to the script.
-#     parser.add_argument("--epochs", type=int, default=100)
-#     parser.add_argument("--train-batch-size", type=int, default=2)
-#     parser.add_argument("--val-batch-size", type=int, default=1)
-#     parser.add_argument("--val-interval", type=int, default=2)
-#     # This is a way to pass additional arguments when running as a script
-#     # and use sagemaker-containers defaults to set their values when not specified.
-#     parser.add_argument("--train", type=str, default=os.environ["SM_CHANNEL_TRAIN"])
-#     parser.add_argument("--validation", type=str, default=os.environ["SM_CHANNEL_VALIDATION"])  
+
     args = arg_parse()
-#     args = parser.parse_args()
-#     train_batch = int(os.environ['SM_HP_TRAIN-BATCH-SIZE'])
-#     train_data_files = data_dicts("train")
-#     val_data_files = data_dicts("val")
     
-    train_loader = load_data(data_files_path, args.train, args.train_batch_size, args.num_workers, "train")
-    val_loader = load_data(data_files_path, args.val, args.val_batch_size, args.num_workers, "val")
-    training(args.epochs, args.val_interval, train_loader, val_loader)
+    train_load_data = load_data(data_files_path, args.train_batch_size, args.num_workers, "training")
+    train_loader = train_load_data[0]
+    train_ds = train_load_data[1]
+    val_load_data = load_data(data_files_path, args.val_batch_size, args.num_workers, "val")
+    val_loader = val_load_data[0]
+    val_ds = val_load_data[1]
+    training(args.epochs, args.val_interval, train_loader, train_ds, val_loader, val_ds)
