@@ -5,7 +5,6 @@ import os
 import shutil
 import tempfile
 import time
-import matplotlib.pyplot as plt
 import numpy as np
 from monai.apps import DecathlonDataset, download_and_extract
 from monai.config import print_config, DtypeLike, PathLike
@@ -56,6 +55,8 @@ import tempfile
 import shutil
 import glob
 import argparse
+
+from os import path
 
 ## parse arguments 
 def arg_parse():
@@ -255,7 +256,7 @@ def training(epochs, val_interval, train_loader, train_ds, val_loader, val_ds):
                     best_metric = metric
                     best_metric_epoch = epoch + 1
                     torch.save(model.state_dict(), os.path.join(
-                        root_dir, "best_metric_model.pth"))
+                        model_artifacts_path, "best_metric_model.pth"))
                     print("saved new best metric model")
                 print(
                     f"current epoch: {epoch + 1} current mean dice: {metric:.4f}"
@@ -264,7 +265,9 @@ def training(epochs, val_interval, train_loader, train_ds, val_loader, val_ds):
                 )
 
     ## save the model 
-    save_model_artifacts(model_dir + "/", net)
+    path = os.path.join(model_artifacts_path, "best_metric_model.pth")
+    # recommended way from http://pytorch.org/docs/master/notes/serialization.html
+    torch.save(model.cpu().state_dict(), path)
 
 
 if __name__ == "__main__":
