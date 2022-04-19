@@ -1,4 +1,5 @@
 # from monai.utils import first, set_determinism
+import numpy
 from monai.transforms import (
     AsDiscrete,
     AsDiscreted,
@@ -29,6 +30,8 @@ import tempfile
 import shutil
 import os, sys, glob, argparse, json, subprocess
 import logging
+
+from inference import model_fn, input_fn, predict_fn, output_fn
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)

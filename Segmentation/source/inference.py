@@ -1,6 +1,7 @@
 # Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 # from monai.utils import first, set_determinism
+import numpy
 from monai.transforms import (
     AsDiscrete,
     AsDiscreted,
@@ -52,7 +53,7 @@ def model_fn(model_dir):
         strides=(2, 2, 2, 2),
         num_res_units=2,
         norm=Norm.BATCH
-    ).to(device)
+    )
 
     print("model_dir is", model_dir)
     print("inside model_dir is", os.listdir(model_dir))
@@ -61,7 +62,7 @@ def model_fn(model_dir):
     return model.to(device)   
 
 
-## define data loader here
+## define data loader for validation dataset
 ## Notice: val_files including both original image as well as label
 ## further work should be done in the situation without labels
 def get_val_data_loader(val_files):
@@ -93,13 +94,11 @@ JSON_CONTENT_TYPE= 'application/json'
 #output is in numpy, which is transformed from tensor as direct output from model
 NUMPY_CONTENT_TYPE = 'application/x-npy'
 
+
+
 s3_client = boto3.client('s3')
-
-
-## function to download the whole folder
-
 s3 = boto3.resource('s3') # assumes credentials & configuration are handled outside python in .aws directory or environment variables
-
+## function to download the whole folder
 def download_s3_folder(bucket_name, s3_folder, local_dir=None):
     """
     Download the contents of a folder directory
@@ -117,6 +116,7 @@ def download_s3_folder(bucket_name, s3_folder, local_dir=None):
         if obj.key[-1] == '/':
             continue
         bucket.download_file(obj.key, target)
+    return
 
 
 def input_fn(serialized_input_data, content_type):
@@ -135,7 +135,6 @@ def input_fn(serialized_input_data, content_type):
         s3_folder=data['key']## prefix with all the image files as well as labelings
         
         ## Download the folder from s3 
-        print("loaded label is:" , label)
         print("bucket:" , bucket, " key is: ",s3_folder)
         
         # download into local folder
@@ -147,7 +146,6 @@ def input_fn(serialized_input_data, content_type):
         labels = sorted(glob.glob(os.path.join(local_dir, "labelsTr", "*.nii.gz")))
         
         if(len(images)==len(labels)):
-            
             data_dicts = [{"image": image_name, "label": label_name} for image_name, label_name in zip(images, labels)]
         
         
@@ -164,10 +162,13 @@ def input_fn(serialized_input_data, content_type):
                     val_data["image"].to(device),
                     val_data["label"].to(device),
                 )
-
-                return val_inputs
+            
+            shutil.rmtree(local_dir)
+            print('removed the downloaded files after loading them!')
+            
+            return val_inputs
         else:
-            raise Exception('Inputs for Labels and Images are not matched:  ' len(images), "!= ", len(labels))
+            raise Exception('Inputs for Labels and Images are not matched:  ', len(images), "!= ", len(labels))
 
 
 
@@ -184,16 +185,20 @@ def predict_fn(input_data, model):
     
     roi_size = (160, 160, 160)
     sw_batch_size = 4
-    val_outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size, model)
+    val_outputs = sliding_window_inference(input_data, roi_size, sw_batch_size, model)
     print("response from modeling prediction is", val_outputs.shape)
     return val_outputs
 
 
 def output_fn(prediction_output, accept=NUMPY_CONTENT_TYPE):
+    
+    print("accept is:", accept)
     if accept == NUMPY_CONTENT_TYPE:
         print("response in output_fn is", prediction_output)
-        pred = torch.argmax(val_outputs, dim=1).detach().cpu()[0, :, :, :].numpy()
-       
+        pred = torch.argmax(prediction_output, dim=1).detach().cpu()[0, :, :, :].numpy()
+        print("response in output_fn is", prediction_output)
+
+
         return pred
 
     raise Exception('Requested unsupported ContentType in Accept: ' + accept)
