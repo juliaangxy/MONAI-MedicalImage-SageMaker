@@ -92,7 +92,7 @@ def get_val_data_loader(val_files):
 JSON_CONTENT_TYPE= 'application/json'
 
 #output is in numpy, which is transformed from tensor as direct output from model
-NUMPY_CONTENT_TYPE = 'application/x-npy'
+NUMPY_CONTENT_TYPE = 'application/json'
 
 
 
@@ -138,7 +138,7 @@ def input_fn(serialized_input_data, content_type):
         print("bucket:" , bucket, " key is: ",s3_folder)
         
         # download into local folder
-        local_dir="test/dataset"
+        local_dir="tmp"
         download_s3_folder(bucket, s3_folder, local_dir=local_dir)
         
         ## define key for image and labels
@@ -190,16 +190,17 @@ def predict_fn(input_data, model):
     return val_outputs
 
 
-def output_fn(prediction_output, accept=NUMPY_CONTENT_TYPE):
+def output_fn(prediction_output, accept=JSON_CONTENT_TYPE):
     
     print("accept is:", accept)
-    if accept == NUMPY_CONTENT_TYPE:
+    if accept == JSON_CONTENT_TYPE:
         print("response in output_fn is", prediction_output)
-        pred = torch.argmax(prediction_output, dim=1).detach().cpu()[0, :, :, :].numpy()
-        print("response in output_fn is", prediction_output)
-
-
-        return pred
+        pred = torch.argmax(prediction_output, dim=1).detach().cpu()[0, :, :, :].tolist()
+        inference_result = { 'pred': pred}
+        
+        print("inference_result is: ", inference_result)
+        return inference_result
 
     raise Exception('Requested unsupported ContentType in Accept: ' + accept)
+
 
