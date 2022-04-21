@@ -199,22 +199,24 @@ def train(args):
                 if metric > best_metric:
                     best_metric = metric
                     best_metric_epoch = epoch + 1
-                    torch.save(model.state_dict(), os.path.join(
-                    args.data_dir, "best_metric_model.pth"))
+                    #torch.save(model.state_dict(), os.path.join(args.data_dir, "best_metric_model.pth"))
                     print("saved new best metric model")
+
+                    save_model(model, args.model_dir)
+                    
                 print(
                     f"current epoch: {epoch + 1} current mean dice: {metric:.4f}"
                     f"\nbest mean dice: {best_metric:.4f} "
                     f"at epoch: {best_metric_epoch}"
                 ) 
-    save_model(model, args.model_dir)
+    
 
 
 def save_model(model, model_dir):
     logger.info("Saving the model.")
     path = os.path.join(model_dir, 'model.pth')
     # recommended way from http://pytorch.org/docs/master/notes/serialization.html
-    torch.save(model.cpu().state_dict(), path)
+    torch.save(model.state_dict(), path)
 
 
 if __name__ == '__main__':

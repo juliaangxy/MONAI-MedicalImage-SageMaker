@@ -53,12 +53,13 @@ def model_fn(model_dir):
         strides=(2, 2, 2, 2),
         num_res_units=2,
         norm=Norm.BATCH
-    )
+    ).to(device) 
 
     print("model_dir is", model_dir)
     print("inside model_dir is", os.listdir(model_dir))
     with open(os.path.join(model_dir, 'model.pth'), 'rb') as f:
-        model.load_state_dict(torch.load(f))
+        model.load_state_dict(torch.load(f,map_location=torch.device('cpu') ))
+        print("model load with cpu!")
     return model.to(device)   
 
 
