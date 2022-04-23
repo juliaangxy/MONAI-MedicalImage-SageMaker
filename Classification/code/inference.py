@@ -49,7 +49,7 @@ def model_fn(model_dir):
         spatial_dims=2,
         in_channels=1,
         out_channels=3
-    )
+    ).to(device) 
     
     print("model_dir is", model_dir)
     print("inside model_dir is", os.listdir(model_dir))
@@ -124,13 +124,12 @@ def input_fn(serialized_input_data, content_type):
 def predict_fn(input_data, model):
     print('Got input Data: {}'.format(input_data))
     print("input_fn in predict:",input_data)
-    #print(inputs[0,0,1])## debugging purpose
     model.eval()
     response=model(input_data)
     print("response from modeling prediction is", response)
     return response
 
-class_names = [ "Normal","Cap", "Covid",]
+class_names = [ "Normal","Cap", "Covid"]
 def output_fn(prediction_output, accept=JSON_CONTENT_TYPE):
     if accept == JSON_CONTENT_TYPE:
         print("response in output_fn is", prediction_output)
