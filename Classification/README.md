@@ -10,8 +10,10 @@ The dataset is obtained from this [source COVID-CT-MD](https://github.com/Shahin
 + In training_deplying_model.ipynb notebooks, I will introduce a typical ML  workflow in SageMaker which covers data preparation --> model training --> model deployment --> Inference. 
 + In Inference-explanation.ipynb notebook, I will introduce a few options of deployments, and dive deep into what is happening inside the container. 
 
+```
 model.tar.gz/
 |- model.pth
-|- source/
+|- code/
   |- inference.py
   |- requirements.txt  # only for versions 1.3.1 and higher
+```
