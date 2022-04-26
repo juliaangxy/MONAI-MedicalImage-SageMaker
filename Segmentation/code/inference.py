@@ -34,7 +34,7 @@ import os, sys, glob, argparse, json, subprocess
 import logging
 from pathlib import Path
 import boto3
-
+import numpy as np
 
 
 logger = logging.getLogger(__name__)
@@ -42,23 +42,25 @@ logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
+
 ## load model artifact here
 def model_fn(model_dir):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNet(
-        spatial_dims=3,
-        in_channels=1,
-        out_channels=2,
-        channels=(16, 32, 64, 128, 256),
-        strides=(2, 2, 2, 2),
-        num_res_units=2,
-        norm=Norm.BATCH
-    ).to(device) 
+#     model = UNet(
+#         spatial_dims=3,
+#         in_channels=1,
+#         out_channels=2,
+#         channels=(16, 32, 64, 128, 256),
+#         strides=(2, 2, 2, 2),
+#         num_res_units=2,
+#         norm=Norm.BATCH
+#     ).to(device) 
 
     print("model_dir is", model_dir)
     print("inside model_dir is", os.listdir(model_dir))
     with open(os.path.join(model_dir, 'model.pth'), 'rb') as f:
-        model.load_state_dict(torch.load(f,map_location=torch.device('cpu') ))
+#         model.load_state_dict(torch.load(f,map_location=torch.device('cpu') ))
+        model = torch.load(f,map_location=torch.device('cpu') )
         print("model load with cpu!")
     return model.to(device)   
 
@@ -84,17 +86,33 @@ def get_val_data_loader(val_files):
         ]
     )
     
-    val_ds = CacheDataset( data=val_files, transform=val_transforms, cache_rate=1.0)
+    val_ds = CacheDataset(data=val_files, transform=val_transforms, cache_rate=1.0)
     val_loader = DataLoader(val_ds, batch_size=1)
 
     return val_loader
 
-## input is in json, to indicate the location of testing files in S3
-JSON_CONTENT_TYPE= 'application/json'
+def get_test_data_loader(test_files):
 
-#output is in numpy, which is transformed from tensor as direct output from model
-NUMPY_CONTENT_TYPE = 'application/json'
+    test_org_transforms = Compose(
+        [
+            LoadImaged(keys="image"),
+            EnsureChannelFirstd(keys="image"),
+            Spacingd(keys=["image"], pixdim=(
+                1.5, 1.5, 2.0), mode=("bilinear")),
+            Orientationd(keys=["image"], axcodes="RAS"),
+            ScaleIntensityRanged(
+                keys=["image"], a_min=-57, a_max=164,
+                b_min=0.0, b_max=1.0, clip=True,
+            ),
+            CropForegroundd(keys=["image"], source_key="image"),
+            EnsureTyped(keys=["image"]),
+        ]
+    )
 
+    test_org_ds = CacheDataset(data=test_files, transform=test_org_transforms, cache_rate=1.0)
+    test_org_loader = DataLoader(test_org_ds, batch_size=1)
+    
+    return test_org_loader
 
 
 s3_client = boto3.client('s3')
@@ -117,6 +135,7 @@ def download_s3_folder(bucket_name, s3_folder, local_dir=None):
         if obj.key[-1] == '/':
             continue
         bucket.download_file(obj.key, target)
+        
     return
 
 
@@ -134,44 +153,65 @@ def input_fn(serialized_input_data, content_type):
         
         bucket=data['bucket']
         s3_folder=data['key']## prefix with all the image files as well as labelings
+        mode=data["mode"]
+        start=int(data["start"])
+        step=int(data["step"])
+        end=start+step
         
-        ## Download the folder from s3 
-        print("bucket:" , bucket, " key is: ",s3_folder)
-        
+        ## Download the folder from s3         
         # download into local folder
         local_dir="tmp"
         download_s3_folder(bucket, s3_folder, local_dir=local_dir)
+        print("Downloaded files from S3. Bucket:" , bucket, " Key: ",s3_folder)
         
-        ## define key for image and labels
-        images = sorted(glob.glob(os.path.join(local_dir, "imagesTr", "*.nii.gz")))
-        labels = sorted(glob.glob(os.path.join(local_dir, "labelsTr", "*.nii.gz")))
+        if mode=="val":
+            
+            ## define key for image and labels
+            images = sorted(glob.glob(os.path.join(local_dir, "imagesTr", "*.nii.gz")))
+            labels = sorted(glob.glob(os.path.join(local_dir, "labelsTr", "*.nii.gz")))
         
-        if(len(images)==len(labels)):
-            data_dicts = [{"image": image_name, "label": label_name} for image_name, label_name in zip(images, labels)]
+            if(len(images)==len(labels)):
+                data_dicts = [{"image": image_name, "label": label_name} for image_name, label_name in zip(images, labels)]
+
+
+                print('Download finished!')
+                print('Start to inference for the files and labels >>> ', data_dicts)
+
+                val_loader = get_val_data_loader(data_dicts)
+                print('get_val_data_loader finished!')
+
+                val_list = []
+                for i, val_data in enumerate(val_loader):
+                    val_inputs, val_labels = (
+                        val_data["image"].to(device),
+                        val_data["label"].to(device),
+                    )
+                    val_list.append(val_inputs)
+
+                return val_list[start:end]
+            else:
+                raise Exception('Inputs for Labels and Images are not matched:  ', len(images), "!= ", len(labels))
         
-        
+        if mode=="test":
+            images = sorted(glob.glob(os.path.join(local_dir, "imagesTs", "*.nii.gz")))
+            data_dicts = [{"image": image_name} for image_name in images]
+
+
             print('Download finished!')
-            print('Start to inference for the files and labels >>> ', data_dicts)
+            print('Start to inference for the files >>> ', data_dicts)
 
+            test_loader = get_test_data_loader(data_dicts)
+            print('get_test_data_loader finished!')
 
-            val_loader = get_val_data_loader(data_dicts)
-            print('get_val_data_loader finished!')
+            test_list = []
+            for i, test_data in enumerate(test_loader):
+                test_inputs = test_data["image"].to(device)
+                test_list.append(test_inputs)
 
-
-            for i, val_data in enumerate(val_loader):
-                val_inputs, val_labels = (
-                    val_data["image"].to(device),
-                    val_data["label"].to(device),
-                )
-            
-            shutil.rmtree(local_dir)
-            print('removed the downloaded files after loading them!')
-            
-            return val_inputs
-        else:
-            raise Exception('Inputs for Labels and Images are not matched:  ', len(images), "!= ", len(labels))
-
-
+            return test_list[start:end]
+        
+        shutil.rmtree(local_dir)
+        print('removed the downloaded files after loading them!')
 
     else:
         raise Exception('Requested unsupported ContentType in Accept: ' + content_type)
@@ -181,26 +221,24 @@ def input_fn(serialized_input_data, content_type):
 def predict_fn(input_data, model):
     print('Got input Data: {}'.format(input_data))
     print("input_fn in predict:",input_data)
-    #print(inputs[0,0,1])## debugging purpose
-    model.eval()
     
     roi_size = (160, 160, 160)
     sw_batch_size = 4
-    val_outputs = sliding_window_inference(input_data, roi_size, sw_batch_size, model)
-    print("response from modeling prediction is", val_outputs.shape)
-    return val_outputs
-
-
-def output_fn(prediction_output, accept=JSON_CONTENT_TYPE):
     
-    print("accept is:", accept)
-    if accept == JSON_CONTENT_TYPE:
-        print("response in output_fn is", prediction_output)
-        pred = torch.argmax(prediction_output, dim=1).detach().cpu()[0, :, :, 80].tolist()
-        inference_result = { 'pred': pred}
-        
-        print("inference_result is: ", inference_result)
-        return inference_result
+    val_list=[]
+    for i, val_data in enumerate(input_data):
+        val_outputs = sliding_window_inference(
+            val_data, roi_size, sw_batch_size, model
+        )
+        val_list.append(torch.argmax(
+            val_outputs, dim=1).detach().cpu()[0, :, :, 80].tolist())
+    return val_list
 
-    raise Exception('Requested unsupported ContentType in Accept: ' + accept)
+
+def output_fn(prediction_output, content_type):
+    try:
+        pred_json = {"pred": prediction_output}
+        return pred_json
+    except:
+        raise Exception('Requested unsupported ContentType: ' + content_type)
 
