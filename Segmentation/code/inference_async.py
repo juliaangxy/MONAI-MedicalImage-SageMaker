@@ -34,7 +34,6 @@ import os, sys, glob, argparse, json, subprocess
 import logging
 from pathlib import Path
 import boto3
-# from sagemaker_inference import content_types, decoder, default_inference_handler, encoder, errors
 import numpy as np
 
 
@@ -42,12 +41,11 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
-s3_client = boto3.client('s3')
-s3 = boto3.resource('s3') # assumes credentials & configuration are handled outside python in .aws directory or environment variables
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 ## load model artifact here
 def model_fn(model_dir):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #     model = UNet(
 #         spatial_dims=3,
 #         in_channels=1,
@@ -70,10 +68,32 @@ def model_fn(model_dir):
 ## define data loader for validation dataset
 ## Notice: val_files including both original image as well as label
 ## further work should be done in the situation without labels
+def get_val_data_loader(val_files):
+    ## define transform for validation 
+    val_transforms = Compose(
+        [
+            LoadImaged(keys=["image", "label"]),
+            EnsureChannelFirstd(keys=["image", "label"]),
+            Spacingd(keys=["image", "label"], pixdim=(
+                1.5, 1.5, 2.0), mode=("bilinear", "nearest")),
+            Orientationd(keys=["image", "label"], axcodes="RAS"),
+            ScaleIntensityRanged(
+                keys=["image"], a_min=-57, a_max=164,
+                b_min=0.0, b_max=1.0, clip=True,
+            ),
+            CropForegroundd(keys=["image", "label"], source_key="image"),
+            EnsureTyped(keys=["image", "label"]),
+        ]
+    )
+    
+    val_ds = CacheDataset(data=val_files, transform=val_transforms, cache_rate=1.0)
+    val_loader = DataLoader(val_ds, batch_size=1)
 
-def get_data_loader(data_files):
+    return val_loader
 
-    data_transforms = Compose(
+def get_test_data_loader(test_files):
+
+    test_org_transforms = Compose(
         [
             LoadImaged(keys="image"),
             EnsureChannelFirstd(keys="image"),
@@ -89,32 +109,34 @@ def get_data_loader(data_files):
         ]
     )
 
-    data_ds = CacheDataset(data=data_files, transform=data_transforms, cache_rate=1.0)
-#     data_ds = Dataset(data=data_files, transform=data_transforms)
-    data_loader = DataLoader(data_ds, batch_size=1)
+    test_org_ds = CacheDataset(data=test_files, transform=test_org_transforms, cache_rate=1.0)
+    test_org_loader = DataLoader(test_org_ds, batch_size=1)
     
-    return data_loader
+    return test_org_loader
 
+
+s3_client = boto3.client('s3')
+s3 = boto3.resource('s3') # assumes credentials & configuration are handled outside python in .aws directory or environment variables
 ## function to download the whole folder
-# def download_s3_folder(bucket_name, s3_folder, local_dir=None):
-#     """
-#     Download the contents of a folder directory
-#     Args:
-#         bucket_name: the name of the s3 bucket
-#         s3_folder: the folder path in the s3 bucket
-#         local_dir: a relative or absolute directory path in the local file system
-#     """
-#     bucket = s3.Bucket(bucket_name)
-#     for obj in bucket.objects.filter(Prefix=s3_folder):
-#         target = obj.key if local_dir is None \
-#             else os.path.join(local_dir, os.path.relpath(obj.key, s3_folder))
-#         if not os.path.exists(os.path.dirname(target)):
-#             os.makedirs(os.path.dirname(target))
-#         if obj.key[-1] == '/':
-#             continue
-#         bucket.download_file(obj.key, target)
+def download_s3_folder(bucket_name, s3_folder, local_dir=None):
+    """
+    Download the contents of a folder directory
+    Args:
+        bucket_name: the name of the s3 bucket
+        s3_folder: the folder path in the s3 bucket
+        local_dir: a relative or absolute directory path in the local file system
+    """
+    bucket = s3.Bucket(bucket_name)
+    for obj in bucket.objects.filter(Prefix=s3_folder):
+        target = obj.key if local_dir is None \
+            else os.path.join(local_dir, os.path.relpath(obj.key, s3_folder))
+        if not os.path.exists(os.path.dirname(target)):
+            os.makedirs(os.path.dirname(target))
+        if obj.key[-1] == '/':
+            continue
+        bucket.download_file(obj.key, target)
         
-#     return
+    return
 
 
 def input_fn(serialized_input_data, content_type):
@@ -138,7 +160,7 @@ def input_fn(serialized_input_data, content_type):
         else:
             file=".".join(filestring.split(".")[:-1])
         
-        nslice=int(data["nslice"])
+        #nslice=int(data["nslice"])
         
         local_dir = "tmp"
         
@@ -170,7 +192,7 @@ def input_fn(serialized_input_data, content_type):
         for i, data_l in enumerate(data_loader):
                 pred_input = data_l["image"].to(device)
                 
-        return pred_input, nslice
+        return pred_input
 
     else:
         raise Exception('Requested unsupported ContentType in Accept: ' + content_type)
@@ -180,14 +202,14 @@ def input_fn(serialized_input_data, content_type):
 def predict_fn(input_data, model):
     print('Got input Data: {}'.format(input_data))
     print("input_fn in predict:",input_data)
-    infer_loader, nslice = input_data
+    infer_loader = input_data
     
     roi_size = (160, 160, 160)
     sw_batch_size = 4
     
     test_output = sliding_window_inference(infer_loader, roi_size, sw_batch_size, model)
     
-    infer_output = torch.argmax(test_output, dim=1).detach().cpu()[0, :, :, nslice].tolist()
+    infer_output = torch.argmax(test_output, dim=1).detach().cpu()[0, :, :, 70:80].tolist()
     
 #     for i, val_data in enumerate(input_data):
 #     val_outputs = sliding_window_inference(
@@ -205,4 +227,14 @@ def output_fn(prediction_output, content_type):
         return pred_json
     except:
         raise Exception('Requested unsupported ContentType: ' + content_type)
+
+
+
+def output_fn(prediction_output, content_type):
+    try:
+        pred_json = {"pred": prediction_output}
+        return pred_json
+    except:
+        raise Exception('Requested unsupported ContentType: ' + content_type)
+
 

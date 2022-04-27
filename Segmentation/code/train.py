@@ -208,7 +208,13 @@ def train(args):
                     f"current epoch: {epoch + 1} current mean dice: {metric:.4f}"
                     f"\nbest mean dice: {best_metric:.4f} "
                     f"at epoch: {best_metric_epoch}"
-                ) 
+                )
+        # model code directory
+    model_code_dir = os.path.join(args.model_dir, 'code')
+    os.makedirs(model_code_dir)
+    shutil.copy('/opt/ml/code/inference.py', model_code_dir) ## copy the inference file
+    shutil.copy('/opt/ml/code/requirements.txt', model_code_dir) # copy requirement.txt
+    shutil.copy('/opt/ml/code/inference_async.py', model_code_dir) # copy requirement.txt
     
 
 
@@ -229,7 +235,7 @@ if __name__ == '__main__':
     parser.add_argument('--test-batch-size', type=int, default=100, metavar='N',
                         help='input batch size for testing (default: 100)')
     parser.add_argument('--epochs', type=int, default=600, metavar='N',
-                        help='number of epochs to train (default: 5)')
+                        help='number of epochs to train (default: 100)')
     parser.add_argument('--lr', type=float, default=1e-4, metavar='LR',
                         help='learning rate (default: 0.01)')
     parser.add_argument('--momentum', type=float, default=0.5, metavar='M',

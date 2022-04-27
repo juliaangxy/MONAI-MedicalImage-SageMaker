@@ -5,6 +5,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
 import torch
 import torch.distributed as dist
@@ -26,6 +27,7 @@ from monai.networks.nets import densenet121
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
+
 
 
 class DICOMDataset(Dataset):
@@ -104,13 +106,7 @@ def train(args):
     class_names = list(my_dictionary.keys())
     num_class = len(class_names)
     
-    # generate file list and label list
-    image_file_list=[]
-    image_label_list=[]
-    #class_names = 'Cardiomegaly'
-    
-    image_label_list=[]
-    image_file_list=[]
+ 
     for file in manifest:
             name = file['filename']
             filename = args.data_dir+'/'+name
@@ -121,7 +117,9 @@ def train(args):
     #print('image_label_list ---', image_label_list)
     
     print("Training count =",len(image_file_list))
-            
+    
+    
+    ## get data loader for training dataset and validation dataset
     train_loader = _get_train_data_loader(args.batch_size, image_file_list, image_label_list, False, **kwargs)
 
     #create model
@@ -174,6 +172,11 @@ def train(args):
         epoch_loss_values.append(epoch_loss)
         logger.info(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
     save_model(model, args.model_dir)
+    # model code directory
+    model_code_dir = os.path.join(args.model_dir, 'code')
+    os.makedirs(model_code_dir)
+    shutil.copy('/opt/ml/code/inference.py', model_code_dir) ## copy the inference file
+    shutil.copy('/opt/ml/code/requirements.txt', model_code_dir) # copy requirement.txt
 
 
 def save_model(model, model_dir):
@@ -182,16 +185,7 @@ def save_model(model, model_dir):
     # recommended way from http://pytorch.org/docs/master/notes/serialization.html
     torch.save(model.cpu().state_dict(), path)
 
-def model_fn(model_dir):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = densenet121(
-        spatial_dims=2,
-        in_channels=1,
-        out_channels=3
-    )
-    with open(os.path.join(model_dir, 'model.pth'), 'rb') as f:
-        model.load_state_dict(torch.load(f))
-    return model.to(device)   
+
     
     
 if __name__ == '__main__':
