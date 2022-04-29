@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 # from monai.utils import first, set_determinism
 import numpy
+import time
 from monai.transforms import (
     AsDiscrete,
     AsDiscreted,
@@ -129,7 +130,7 @@ def input_fn(serialized_input_data, content_type):
         
         data = json.loads(serialized_input_data)
         
-        bucket=data['bucket']
+        bucketname=data['bucket']
         s3_folder=data['key']## prefix with all the image files as well as labelings
         filestring=data["file"]
         
@@ -150,7 +151,7 @@ def input_fn(serialized_input_data, content_type):
             
         source = os.path.join(s3_folder, file)
         target = os.path.join(local_dir, file)
-        bucket = s3.Bucket(bucket)
+        bucket = s3.Bucket(bucketname)
         bucket.download_file(source, target)
         print(f'Download {source} to {target} finished!')
 
@@ -169,8 +170,10 @@ def input_fn(serialized_input_data, content_type):
         
         for i, data_l in enumerate(data_loader):
                 pred_input = data_l["image"].to(device)
-                
-        return pred_input, nslice
+        shutil. rmtree(local_dir) ## delete all the files after loading
+
+        
+        return pred_input, nslice, bucketname
 
     else:
         raise Exception('Requested unsupported ContentType in Accept: ' + content_type)
@@ -180,14 +183,28 @@ def input_fn(serialized_input_data, content_type):
 def predict_fn(input_data, model):
     print('Got input Data: {}'.format(input_data))
     print("input_fn in predict:",input_data)
-    infer_loader, nslice = input_data
+    infer_loader, nslice, bucketname = input_data
     
+    print("bucket name is :,", bucketname)
+    s3_client = boto3.client('s3')
+    s3 = boto3.resource('s3')
+    bucket_local = s3.Bucket(bucketname)
+    print("bucket_local name is :,", bucket_local)
     roi_size = (160, 160, 160)
     sw_batch_size = 4
     
     test_output = sliding_window_inference(infer_loader, roi_size, sw_batch_size, model)
     
-    infer_output = torch.argmax(test_output, dim=1).detach().cpu()[0, :, :, nslice].tolist()
+    ## test for output size start here
+    if(nslice<100):
+        print("output a single slice :", nslice)
+        infer_output = torch.argmax(test_output, dim=1).detach().cpu()[0, :, :, nslice].tolist()
+    elif((nslice>=100)&(nslice<200)):
+        print("output 10 slices :", nslice)
+        infer_output = torch.argmax(test_output, dim=1).detach().cpu()[0, :, :, 70:81].tolist()
+    else:
+        print("output all slides")
+        infer_output = torch.argmax(test_output, dim=1).detach().cpu()[0, :, :, :].tolist()
     
 #     for i, val_data in enumerate(input_data):
 #     val_outputs = sliding_window_inference(
@@ -195,13 +212,42 @@ def predict_fn(input_data, model):
 #     )
 #     val_list.append(torch.argmax(
 #         val_outputs, dim=1).detach().cpu()[0, :, :, 80].tolist())
+    print("finished pred_fn!")
     
-    return infer_output
+    ## save the results in S3
+    pred_json = {"pred:": infer_output}
+    json_string = json.dumps(pred_json)
+
+    ext=str(time.time()) ## current timestamp
+    name="results_slides"+ext+".json"
+    print("file name after prediction is:", name)
+    ## save as json file in the container
+    with open(name, 'w') as outfile:
+        outfile.write(json_string)
+    
+    ##upload the results to S3
+    prefix='inference_output'
+    s3_path=bucket_local.upload_file(name, prefix+'/'+name)
+    s3_path=os.path.join(f"S3://{bucketname}",prefix,name)
+    os.remove(name) ## delete the file after uploading
+    print("s3_path after uploading is", s3_path)
+    return s3_path,infer_output,nslice
 
 
 def output_fn(prediction_output, content_type):
+    
+    #print("inside output_fn with length ==", len(prediction_output))
+
+
+    s3_path, tensor_output,nslice=prediction_output
+    
+    print("s3_path after uploading is", s3_path)
+
+
     try:
-        pred_json = {"pred": prediction_output}
+        pred_json = {"s3": s3_path}
+        if(nslice<100):
+            pred_json = {"s3_path": s3_path,"pred": tensor_output }
         return pred_json
     except:
         raise Exception('Requested unsupported ContentType: ' + content_type)
