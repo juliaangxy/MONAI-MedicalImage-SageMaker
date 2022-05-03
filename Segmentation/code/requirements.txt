@@ -2,3 +2,5 @@ monai[all]==0.8.0
 monai-weekly[gdown, nibabel, tqdm, ignite]
 matplotlib
 psutil
+boto3
+sagemaker
