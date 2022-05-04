@@ -1,7 +1,7 @@
 # Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 # from monai.utils import first, set_determinism
-import numpy
+import numpy as np
 import time
 from monai.transforms import (
     AsDiscrete,
@@ -28,15 +28,10 @@ from monai.data import CacheDataset, DataLoader, Dataset, decollate_batch
 from monai.config import print_config
 from monai.apps import download_and_extract
 import torch
-import matplotlib.pyplot as plt
 import tempfile
-import shutil
 import os, sys, glob, argparse, json, subprocess
 import logging
-from pathlib import Path
 import boto3
-# from sagemaker_inference import content_types, decoder, default_inference_handler, encoder, errors
-import numpy as np
 
 
 logger = logging.getLogger(__name__)
@@ -130,7 +125,7 @@ def input_fn(serialized_input_data, content_type):
         
         data = json.loads(serialized_input_data)
         
-        bucketname=data['bucket']
+        bucket=data['bucket']
         s3_folder=data['key']## prefix with all the image files as well as labelings
         filestring=data["file"]
         
@@ -138,8 +133,8 @@ def input_fn(serialized_input_data, content_type):
             file=filestring
         else:
             file=".".join(filestring.split(".")[:-1])
-        
-        nslice=int(data["nslice"])
+            
+        nslice = data["nslice"]
         
         local_dir = "tmp"
         
@@ -151,8 +146,8 @@ def input_fn(serialized_input_data, content_type):
             
         source = os.path.join(s3_folder, file)
         target = os.path.join(local_dir, file)
-        bucket = s3.Bucket(bucketname)
-        bucket.download_file(source, target)
+        bucket_local = s3.Bucket(bucket)
+        bucket_local.download_file(source, target)
         print(f'Download {source} to {target} finished!')
 
         ## Download the folder from s3         
@@ -169,12 +164,10 @@ def input_fn(serialized_input_data, content_type):
         print('get_data_loader finished!')
         
         for i, data_l in enumerate(data_loader):
-                pred_input = data_l["image"].to(device)
-        shutil. rmtree(local_dir) ## delete all the files after loading
-
-        
-        return pred_input, nslice, bucketname
-
+            pred_input = data_l["image"].to(device)
+                
+        return pred_input, nslice, bucket
+            
     else:
         raise Exception('Requested unsupported ContentType in Accept: ' + content_type)
         return
@@ -183,72 +176,79 @@ def input_fn(serialized_input_data, content_type):
 def predict_fn(input_data, model):
     print('Got input Data: {}'.format(input_data))
     print("input_fn in predict:",input_data)
-    infer_loader, nslice, bucketname = input_data
     
-    print("bucket name is :,", bucketname)
-    s3_client = boto3.client('s3')
-    s3 = boto3.resource('s3')
-    bucket_local = s3.Bucket(bucketname)
-    print("bucket_local name is :,", bucket_local)
+    pred_input, nslice, bucket = input_data
+
     roi_size = (160, 160, 160)
     sw_batch_size = 4
     
-    test_output = sliding_window_inference(infer_loader, roi_size, sw_batch_size, model)
+    test_output = sliding_window_inference(pred_input, roi_size, sw_batch_size, model)
     
-    ## test for output size start here
-    if(nslice<100):
-        print("output a single slice :", nslice)
+    if isinstance(nslice,int):
         infer_output = torch.argmax(test_output, dim=1).detach().cpu()[0, :, :, nslice].tolist()
-    elif((nslice>=100)&(nslice<200)):
-        print("output 10 slices :", nslice)
-        infer_output = torch.argmax(test_output, dim=1).detach().cpu()[0, :, :, 70:81].tolist()
-    else:
-        print("output all slides")
-        infer_output = torch.argmax(test_output, dim=1).detach().cpu()[0, :, :, :].tolist()
-    
-#     for i, val_data in enumerate(input_data):
-#     val_outputs = sliding_window_inference(
-#         val_data, roi_size, sw_batch_size, model
-#     )
-#     val_list.append(torch.argmax(
-#         val_outputs, dim=1).detach().cpu()[0, :, :, 80].tolist())
-    print("finished pred_fn!")
-    
-    ## save the results in S3
-    pred_json = {"pred:": infer_output}
-    json_string = json.dumps(pred_json)
 
-    ext=str(time.time()) ## current timestamp
-    name="results_slides"+ext+".json"
-    print("file name after prediction is:", name)
-    ## save as json file in the container
-    with open(name, 'w') as outfile:
-        outfile.write(json_string)
+        return infer_output, nslice    
     
-    ##upload the results to S3
-    prefix='inference_output'
-    s3_path=bucket_local.upload_file(name, prefix+'/'+name)
-    s3_path=os.path.join(f"S3://{bucketname}",prefix,name)
-    os.remove(name) ## delete the file after uploading
-    print("s3_path after uploading is", s3_path)
-    return s3_path,infer_output,nslice
+    elif isinstance(nslice,str):
+        
+        if ":" in nslice:
+            range_start, range_end = [int(x) for x in nslice.split(":")]
+            print(f"range of slices are between {range_start} and {range_end}")
+            infer_output = torch.argmax(test_output, dim=1).detach().cpu()[0, :, :, range_start:range_end].tolist()
+        
+        elif nslice == "all":
+            print("Inferring all slices")
+            infer_output = torch.argmax(test_output, dim=1).detach().cpu()[0, :, :, :].tolist()
+        
+        else:
+            raise Exception('Unsupported nslice value ' + nslice)
+            return
+            
+        ## save the results in S3
+        pred_json = {"pred": infer_output}
+        json_string = json.dumps(pred_json)
+
+        ext=str(time.time()) ## current timestamp
+        name=f"results-{ext}.json"
+        print("file name after prediction is:", name)
+        ## save as json file in the container
+        with open(name, 'w') as outfile:
+            outfile.write(json_string)
+
+        ##upload the results to S3
+        prefix='inference_output'
+        object_name = str(f"{prefix}/{name}")
+        print("OBJECT",object_name)
+        s3_upload=s3.Bucket(bucket).upload_file(name, object_name)
+        s3_path=os.path.join(f"S3://{bucket}",object_name)
+        os.remove(name) ## delete the file after uploading
+        print("s3_path after uploading is", s3_path)
+
+        return s3_path, nslice
+        
+    else:
+        raise Exception('Unsupported nslice value ' + nslice)
+        return
 
 
 def output_fn(prediction_output, content_type):
     
-    #print("inside output_fn with length ==", len(prediction_output))
+    pred_output, nslice = prediction_output
 
-
-    s3_path, tensor_output,nslice=prediction_output
-    
-    print("s3_path after uploading is", s3_path)
-
-
-    try:
-        pred_json = {"s3": s3_path}
-        if(nslice<100):
-            pred_json = {"s3_path": s3_path,"pred": tensor_output }
+    if isinstance(nslice,int):
+        pred_json = {"pred": pred_output}
         return pred_json
-    except:
-        raise Exception('Requested unsupported ContentType: ' + content_type)
+        
+    else:
+        
+        if ":" in nslice or nslice == "all":
+            s3_path = str(pred_output)
+            print("s3_path after uploading is", s3_path)
+            pred_json = {"s3_path": s3_path}
+            return pred_json
+        
+        else:
+            raise Exception('Requested unsupported ContentType: ' + content_type)
+            return
+
 
