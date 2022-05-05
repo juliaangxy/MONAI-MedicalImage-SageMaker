@@ -214,7 +214,6 @@ def train(args):
     os.makedirs(model_code_dir)
     shutil.copy('/opt/ml/code/inference.py', model_code_dir) ## copy the inference file
     shutil.copy('/opt/ml/code/requirements.txt', model_code_dir) # copy requirement.txt
-    shutil.copy('/opt/ml/code/inference_async.py', model_code_dir) # copy requirement.txt
     
 
 
