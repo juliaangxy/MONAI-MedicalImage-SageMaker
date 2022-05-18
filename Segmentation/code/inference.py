@@ -29,7 +29,7 @@ from monai.config import print_config
 from monai.apps import download_and_extract
 import torch
 import tempfile
-import os, sys, glob, argparse, json, subprocess
+import os, sys, glob, argparse, json
 import logging
 import boto3
 

@@ -28,7 +28,7 @@ import torch
 import matplotlib.pyplot as plt
 import tempfile
 import shutil
-import os, sys, glob, argparse, json, subprocess
+import os, sys, glob, argparse, json
 import logging
 
 from inference import model_fn, input_fn, predict_fn, output_fn
@@ -214,7 +214,6 @@ def train(args):
     os.makedirs(model_code_dir)
     shutil.copy('/opt/ml/code/inference.py', model_code_dir) ## copy the inference file
     shutil.copy('/opt/ml/code/requirements.txt', model_code_dir) # copy requirement.txt
-    shutil.copy('/opt/ml/code/inference_async.py', model_code_dir) # copy requirement.txt
     
 
 
@@ -253,17 +252,6 @@ if __name__ == '__main__':
     parser.add_argument('--model-dir', type=str, default=os.environ['SM_MODEL_DIR'])
     parser.add_argument('--data-dir', type=str, default=os.environ['SM_CHANNEL_TRAINING'] if 'SM_CHANNEL_TRAINING' in os.environ else '/opt/ml/input/')
     parser.add_argument('--num-gpus', type=int, default=os.environ['SM_NUM_GPUS'])
-
-# # show mounted filesystems
-#     mount = subprocess.getoutput('df -h')
-#     mntlines = mount.split('\n')
-#     print("Mounted File System on Training Instance:  ")
-#     for l in mntlines:
-#         print(l)
-
-        
-#     for f in os.listdir('/opt/ml/input/data/training'):
-#         print(f)
     
     train(parser.parse_args())
     
